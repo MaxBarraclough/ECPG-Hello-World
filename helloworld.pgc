@@ -1,0 +1,118 @@
+/**
+ * Example/toy program playing with PostgreSQL's basics, through ECPG.
+ * The following operations are demonstrated: CONNECT, SELECT INSERT, DISCONNECT.
+ * Copyright Max Barraclough 2013.
+ * For licence information, see LICENCE file.
+ */
+
+#include <stdlib.h>
+#include <stdio.h>
+#include <string.h>
+
+
+#define ENSURE_FREED_AND_NULLED(PTR) { if (PTR != NULL) {free( PTR ); PTR = NULL;} }
+
+
+int main() {
+
+/////////////////////////////////////////////////////////////////
+/////////////////// Begin Initialisation ////////////////////////
+/////////////////////////////////////////////////////////////////
+
+EXEC SQL BEGIN DECLARE SECTION;
+
+// Looking at http://www.postgresql.org/message-id/20050716215409.GA13517@1
+// it seems that libecpg will allocate for you (malloc) if your var is NULL,
+// but if your var is not null, libecpg will assume it is already pointing
+// to a sufficiently-large array, and will not allocate for you.
+// (This is what happens if you use a C array.)
+//
+// For this reason, if we remove the "= NULL" assignments, and leave the pointers
+// as uninitialised garbage, then libecpg will try to dereference garbage => segfault.
+//
+// Also, if we have libecpg do the allocation, we must call free(1) later.
+
+    char * myCString = NULL; // libecpg will handle allocation
+    // char myCString[11];
+
+    char * myCStringForXML = NULL; // libecpg will handle allocation
+    // char myCStringForXML[60];
+
+    int searchForThis;
+    int myInt;
+    char myChar;
+
+EXEC SQL END DECLARE SECTION;
+
+
+        ECPGdebug(1, stderr);
+
+        EXEC SQL WHENEVER SQLWARNING SQLPRINT;
+        EXEC SQL WHENEVER SQLERROR SQLPRINT;
+
+/////////////////////////////////////////////////////////////////
+//////////////////// End Initialisation /////////////////////////
+/////////////////////////////////////////////////////////////////
+
+        do {
+            puts("Search for which number? (0 <= x <= 9)");
+            scanf("%d", &searchForThis);
+        } while (searchForThis < 0 || searchForThis > 9);
+        // do/while means the uninitialised (garbage) value of searchForThis is not significant
+
+        EXEC SQL CONNECT TO TestDB@localhost USER "username" USING "abc123";
+
+        EXEC SQL SELECT "Number","CorrespondingChar","EnglishString","XMLrepresentation"
+          INTO :myInt, :myChar, :myCString, :myCStringForXML
+          FROM "public"."MyFirstTable"
+          WHERE "Number" = :searchForThis;
+        // You need the quotes in "Number"; it tries for "number" if we don't use quotes...
+        // Is this some downcasing bug?  TODO
+
+        // "02000" is the sqlstate for zero rows,
+        //  according to http://www.postgresql.org/docs/9.3/static/ecpg-errors.html
+        // (search for "SQLSTATE 02000").
+        // That's the only error we anticipate. Anything else we'll leave to the automatic error messages.
+
+        // strcmp returns 0 whenn the two strings are equal.
+        // Matching "02000" means 'no match was found'.
+        // (i.e. strcmp will retun 0 if no match was found.)
+        {
+            const int matchFoundBool = strcmp( sqlca.sqlstate, "02000" );
+
+            if( matchFoundBool ) {
+
+                const int miscErrorsPresentBool = strcmp( sqlca.sqlstate, "00000" ); // "00000" means 'no errors'
+                if (miscErrorsPresentBool) {
+                    puts("Other error encountered - not attempting to print out retrieved values.\nError-code: ");
+                    puts(sqlca.sqlstate);
+                } else {
+                    printf("\n\nNumber: %d, Char: %d ( = %c ), String:", myInt, (int)myChar, myChar);
+                    puts(myCString);               // puts automatically appends a newline
+                    fputs("XML string: ", stdout); // fputs doesn't automatically append a newline
+                    puts(myCStringForXML);
+                }
+
+            } else {
+                puts("No match found");
+            }
+        }
+
+        // We could do a check of the form:
+        //   if( 0 == strcmp( sqlca.sqlstate,"00000" ) ) { No error, so call free(1) } else { There was an error, don't free..? }
+        // but checking for null seems more self-evidently correct.
+
+        ENSURE_FREED_AND_NULLED(myCString);
+        ENSURE_FREED_AND_NULLED(myCStringForXML);
+
+#if 0
+        EXEC SQL INSERT INTO "public"."MyFirstTable" ("Number","CorrespondingChar","EnglishString","XMLrepresentation") VALUES (6,'6','Six','<p>Six</p>');
+          // the awkward use of double-quotes is required, in "public"."MyFirstTable"
+        EXEC SQL COMMIT;
+#endif
+
+        EXEC SQL DISCONNECT;
+
+        return 0;
+}
+
